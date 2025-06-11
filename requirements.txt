@@ -1,6 +1,6 @@
-streamlit
-yt-dlp
-openai-whisper
-transformers
-torch
-sentencepiece
+streamlit==1.33.0
+yt-dlp==2024.04.09          # last stable as of 2024-04-09
+openai-whisper==20231120    # works on Py 3.10 / 3.11
+transformers==4.39.3
+torch==2.2.2
+sentencepiece==0.2.0
