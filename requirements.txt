@@ -1,6 +1,6 @@
 # --- requirements.txt ---
 streamlit==1.33.0
-yt-dlp==2024.04.09
+yt-dlp
 openai-whisper==20240930
 transformers==4.39.3
 torch==2.2.2           # CPU wheel works on 3.11
