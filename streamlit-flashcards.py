@@ -125,12 +125,6 @@ url = st.text_input("Paste a YouTube URL to begin", placeholder="https://www.you
 col1, col2 = st.columns([1, 4])
 with col1:
     start_btn = st.button("Generate", type="primary")
-with col2:
-    sample = st.button("Try sample video")
-
-if sample:
-    url = "https://www.youtube.com/watch?v=LPZh9BOjkQs"
-    st.experimental_rerun()
 
 if start_btn and url:
     whisper_model = load_whisper_model()
