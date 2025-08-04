@@ -2,6 +2,7 @@
 streamlit
 yt-dlp
 openai-whisper
-transformers
-torch
-sentencepiece
+sentence-transformers 
+faiss-cpu 
+groq
+
