@@ -4,7 +4,7 @@ An interactive AI-powered tool that lets you have a conversation with any YouTub
 
 This project leverages a **Retrieval-Augmented Generation (RAG)** pipeline to deliver accurate responses based solely on the video's transcript.
 
-![Demo GIF of the application](assets/demo.gif)
+![Demo of the application](assets/demo.png)
 
 ---
 
