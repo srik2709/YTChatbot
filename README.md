@@ -1,4 +1,4 @@
-# 🤖 Chat with any YouTube Video
+# Chat with any YouTube Video
 
 An interactive AI-powered tool that lets you have a conversation with any YouTube video. Simply provide a video URL, and the application will process its content, allowing you to ask specific questions and get instant, context-aware answers.
 
@@ -8,7 +8,7 @@ This project leverages a **Retrieval-Augmented Generation (RAG)** pipeline to de
 
 ---
 
-### ✨ Key Features
+### Key Features
 
 * **Interactive Chat:** Ask complex questions in natural language and receive answers synthesized directly from the video's content.
 * **Semantic Search:** Goes beyond simple keyword matching to understand the *meaning* behind your query, finding the most relevant video segments.
@@ -17,7 +17,7 @@ This project leverages a **Retrieval-Augmented Generation (RAG)** pipeline to de
 
 ---
 
-### 🏗️ System Architecture
+### System Architecture
 
 This project uses a Retrieval-Augmented Generation (RAG) pipeline to provide answers:
 
@@ -28,7 +28,7 @@ This project uses a Retrieval-Augmented Generation (RAG) pipeline to provide ans
 
 ---
 
-### 🛠️ Tech Stack
+### Tech Stack
 
 * **Application Framework:** Streamlit
 * **Audio Transcription:** `openai-whisper`
@@ -38,7 +38,7 @@ This project uses a Retrieval-Augmented Generation (RAG) pipeline to provide ans
 
 ---
 
-### 🚀 How to Run Locally
+### How to Run Locally
 
 #### Prerequisites
 
