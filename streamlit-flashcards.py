@@ -1,174 +1,206 @@
 import os
-import subprocess
-import tempfile
-from pathlib import Path
-from typing import List, Tuple
-
 import streamlit as st
 import whisper
-from transformers import (
-    pipeline,
-    AutoTokenizer,
-    AutoModelForSeq2SeqLM,
+import yt_dlp
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from groq import Groq
+
+# --- App Configuration ---
+st.set_page_config(
+    page_title="Chat with YouTube",
+    layout="wide"
 )
 
-st.set_page_config(page_title="YouTube ➜ Summary & Flashcards", page_icon="🎓", layout="wide")
+# --- Helper Functions ---
 
-# ------------------------------------------------------------------
-# CACHED MODELS (only loaded once per session)
-# ------------------------------------------------------------------
+@st.cache_resource
+def load_models():
+    """Loads the Whisper and Sentence Transformer models."""
+    whisper_model = whisper.load_model("base")
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return whisper_model, embedding_model
 
-@st.cache_resource(show_spinner=False)
-def load_whisper_model():
-    return whisper.load_model("base", device="cpu")
+def get_video_title(url):
+    """Extracts the video title using yt-dlp."""
+    try:
+        ydl_opts = {'quiet': True, 'skip_download': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(url, download=False)
+            return info_dict.get('title', 'Untitled Video')
+    except Exception:
+        return "Untitled Video"
 
+def download_and_transcribe(url, whisper_model):
+    """Downloads audio and returns the full transcribed text."""
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'outtmpl': 'downloaded_audio.%(ext)s',
+        'quiet': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
 
-@st.cache_resource(show_spinner=False)
-def load_summarizer():
-    return pipeline(
-        "summarization", model="facebook/bart-large-cnn", device=-1  # CPU only
-    )
+    result = whisper_model.transcribe("downloaded_audio.mp3")
+    os.remove("downloaded_audio.mp3") # Clean up the audio file
+    return result['text']
 
-
-@st.cache_resource(show_spinner=False)
-def load_qg():
-    tokenizer = AutoTokenizer.from_pretrained("valhalla/t5-small-qa-qg-hl")
-    model = AutoModelForSeq2SeqLM.from_pretrained("valhalla/t5-small-qa-qg-hl")
-    return tokenizer, model
-
-
-# ------------------------------------------------------------------
-# HELPER FUNCTIONS
-# ------------------------------------------------------------------
-
-def download_audio(url: str, workdir: Path) -> Path:
-    """Download highest‑quality audio from a YouTube URL to MP3."""
-    st.info("Downloading audio… this can take a minute ⏳")
-    audio_path = workdir / "%\(id)s.%(ext)s"  # yt‑dlp pattern
-    cmd = [
-        "yt-dlp",
-        "-f",
-        "bestaudio",
-        "--extract-audio",
-        "--audio-format",
-        "mp3",
-        "-o",
-        str(audio_path),
-        url,
-    ]
-    result = subprocess.run(cmd, capture_output=True)
-    if result.returncode != 0:
-        st.error("yt-dlp failed. Details in console log.")
-        st.text(result.stderr.decode())
-        raise RuntimeError("Audio download failed")
-    # yt‑dlp expands pattern → first file in workdir
-    return next(workdir.glob("*.mp3"))
-
-
-def split_into_chunks(text: str, max_words: int = 450) -> List[str]:
+def split_into_chunks(text: str, chunk_size: int = 500, chunk_overlap: int = 50):
+    """Splits text into overlapping chunks of words."""
     words = text.split()
-    return [" ".join(words[i : i + max_words]) for i in range(0, len(words), max_words)]
+    chunks = []
+    for i in range(0, len(words), chunk_size - chunk_overlap):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
+    return chunks
 
+def build_vector_store(text_chunks, embedding_model):
+    """Builds a FAISS vector store from text chunks."""
+    embeddings = embedding_model.encode(text_chunks, convert_to_tensor=False)
+    
+    # FAISS requires a 2D array of floats
+    embeddings = np.array(embeddings).astype('float32')
+    
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
+    
+    return index, text_chunks
 
-def summarize_chunks(chunks: List[str], summarizer) -> str:
-    mini_summaries = []
-    for chunk in chunks:
-        if len(chunk.split()) < 30:
-            continue
-        summary = summarizer(
-            chunk,
-            max_length=300,
-            min_length=100,
-            do_sample=False,
-            truncation=True,
-        )[0]["summary_text"]
-        mini_summaries.append(summary)
-    if not mini_summaries:
-        return "⚠️ Could not summarize any chunks."  # early exit
-    combined = " ".join(mini_summaries)
-    final = summarizer(
-        combined, max_length=500, min_length=150, do_sample=False, truncation=True
-    )[0]["summary_text"]
-    return final
+def search_vector_store(query, embedding_model, index, texts, k=5):
+    """Searches the vector store for the most relevant text chunks."""
+    query_embedding = embedding_model.encode([query], convert_to_tensor=False).astype('float32')
+    distances, indices = index.search(query_embedding, k)
+    
+    # Retrieve the original text chunks
+    return [texts[i] for i in indices[0]]
 
+# --- Streamlit UI ---
 
-def generate_flashcards(summary: str, tokenizer, model) -> List[Tuple[str, str]]:
-    import torch
+st.title("Chat with any YouTube Video")
+st.markdown("Enter a YouTube URL, so that you can ask questions about the video's content.")
 
-    device = torch.device("cpu")
-    flashcards = []
-    sentences = summary.split(". ")
-    for sent in sentences:
-        sent = sent.strip()
-        if len(sent.split()) < 7:
-            continue
-        prompt = f"generate question: {sent}"
-        input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-        output = model.generate(
-            input_ids, max_length=64, num_beams=4, early_stopping=True
-        )
-        question = tokenizer.decode(output[0], skip_special_tokens=True)
-        flashcards.append((question.strip(), sent))
-    return flashcards
+# --- Sidebar for Inputs ---
+with st.sidebar:
+    st.header("Configuration")
+    groq_api_key = st.text_input("Groq API Key", type="password", help="Get your free API key from groq.com")
+    youtube_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
+    process_button = st.button("Process Video", type="primary")
+    st.markdown("---")
+    st.info("This app uses a RAG pipeline with Groq's Llama3-8B model to chat with video content.")
 
+# --- Main App Logic ---
 
-# ------------------------------------------------------------------
-# UI LAYOUT
-# ------------------------------------------------------------------
+# Initialize models
+whisper_model, embedding_model = load_models()
 
-st.title("🎬 YouTube → 📜 Summary → 🃏 Flashcards")
-st.markdown(
-    "Convert any YouTube lecture or talk into a concise summary **and** quiz‑style flashcards, all in your browser.")
+# Initialize session state for chat history and vector store
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "video_title" not in st.session_state:
+    st.session_state.video_title = ""
 
-url = st.text_input("Paste a YouTube URL to begin", placeholder="https://www.youtube.com/watch?v=…")
+# --- Video Processing ---
+if process_button and youtube_url:
+    if not groq_api_key:
+        st.error("Please enter your Groq API key in the sidebar.")
+    else:
+        with st.spinner("Processing video... This may take a few minutes depending on the length of the video and your system's memory. The entire process will run in your system's memory. So please be patient."):
+            try:
+                # Reset state for new video
+                st.session_state.messages = []
+                st.session_state.vector_store = None
+                
+                st.session_state.video_title = get_video_title(youtube_url)
+                st.info(f"Processing video: **{st.session_state.video_title}**")
 
-col1, col2 = st.columns([1, 4])
-with col1:
-    start_btn = st.button("Generate", type="primary")
+                # 1. Download and Transcribe
+                full_transcript = download_and_transcribe(youtube_url, whisper_model)
+                
+                # 2. Split text into chunks
+                text_chunks = split_into_chunks(full_transcript)
 
-if start_btn and url:
-    whisper_model = load_whisper_model()
-    summarizer = load_summarizer()
-    tokenizer, qg_model = load_qg()
+                # 3. Build Vector Store
+                index, chunks_for_store = build_vector_store(text_chunks, embedding_model)
+                st.session_state.vector_store = (index, chunks_for_store)
+                
+                st.success("Video processed successfully! You can now ask questions.")
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
+                st.session_state.vector_store = None # Ensure it's cleared on error
 
-    with st.spinner("Processing… grab a coffee ☕"):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            mp3_path = download_audio(url, tmpdir)
+# --- Chat Interface ---
+if st.session_state.video_title:
+    st.header(f"Chat: *{st.session_state.video_title}*")
 
-            st.success("Audio downloaded ✔️")
-            st.info("Transcribing with Whisper…")
-            transcript = whisper_model.transcribe(str(mp3_path))
-            text = transcript["text"]
-            st.success("Transcript ready ✔️")
+# Display previous chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-        with st.expander("📄 Raw transcript (first 1500 chars)"):
-            st.write(text[:1500] + "…")
+# Handle user input
+if user_query := st.chat_input("Ask a question about the video..."):
+    if st.session_state.vector_store is None:
+        st.error("Please process a video first.")
+    elif not groq_api_key:
+        st.error("Please enter your Groq API key in the sidebar to chat.")
+    else:
+        # Add user message to history
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with st.chat_message("user"):
+            st.markdown(user_query)
 
-        st.info("Summarising…")
-        chunks = split_into_chunks(text)
-        summary = summarize_chunks(chunks, summarizer)
-        st.success("Summary completed ✔️")
+        # Retrieve context and generate response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                index, texts = st.session_state.vector_store
+                
+                # Search for context
+                context_chunks = search_vector_store(user_query, embedding_model, index, texts)
+                context = "\n\n".join(context_chunks)
 
-        st.subheader("📝 Video Summary")
-        st.markdown(summary)
+                # Display the context being used
+                with st.expander("Show Context"):
+                    st.write(context)
 
-        st.info("Generating flashcards…")
-        flashcards = generate_flashcards(summary, tokenizer, qg_model)
-        st.success(f"Created {len(flashcards)} flashcards ✔️")
+                # Prepare prompt for Groq API
+                client = Groq(api_key=groq_api_key)
+                prompt = f"""
+                You are a helpful YouTube assistant. Your task is to answer the user's question, you can use the provided video transcript context"
 
-        st.subheader("🎯 Flashcards (Q → A)")
-        for i, (q, a) in enumerate(flashcards, 1):
-            with st.expander(f"{i}. {q}"):
-                st.write(a)
+                CONTEXT FROM THE VIDEO:
+                ---
+                {context}
+                ---
 
-        # Optional download
-        if flashcards:
-            csv_lines = ["Question,Answer"] + [f'"{q}","{a}"' for q, a in flashcards]
-            csv_data = "\n".join(csv_lines).encode("utf-8")
-            st.download_button(
-                "⬇️ Download CSV", data=csv_data, file_name="flashcards.csv", mime="text/csv"
-            )
+                USER'S QUESTION: {user_query}
+                """
+                
+                # Get and stream response from Groq
+                try:
+                    stream = client.chat.completions.create(
+                        model="llama3-8b-8192",
+                        messages=[{"role": "system", "content": prompt}],
+                        temperature=0,
+                        stream=True,
+                    )
+                    
+                    def stream_generator(stream):
+                        for chunk in stream:
+                            if chunk.choices[0].delta.content is not None:
+                                yield chunk.choices[0].delta.content
 
-else:
-    st.caption("👈 Enter a valid YouTube link and click *Generate*. Processing happens entirely on CPU, so please be patient.")
+                    response = st.write_stream(stream_generator(stream))
+                    
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+
+                except Exception as e:
+                    st.error(f"An error occurred with the Groq API: {e}")
