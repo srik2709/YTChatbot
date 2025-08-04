@@ -13,8 +13,6 @@ This project leverages a **Retrieval-Augmented Generation (RAG)** pipeline to de
 * **Interactive Chat:** Ask complex questions in natural language and receive answers synthesized directly from the video's content.
 * **Semantic Search:** Goes beyond simple keyword matching to understand the *meaning* behind your query, finding the most relevant video segments.
 * **On-the-Fly Processing:** Processes videos in real-time without needing a pre-existing database.
-* **Local & Private:** Runs entirely on your local machine. Your data and API keys never leave your computer.
-
 ---
 
 ### System Architecture
